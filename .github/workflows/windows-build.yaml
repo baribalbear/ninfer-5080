@@ -67,10 +67,9 @@ jobs:
         cmake --build build --config Release --parallel 4
 
     - name: Upload Build Artifacts
-      uses: actions/artifacts@v4
+      uses: actions/upload-artifact@v4
       with:
         name: ninfer-windows-cuda13.4
         path: |
           build/apps/Release/
           build/bin/Release/
-
