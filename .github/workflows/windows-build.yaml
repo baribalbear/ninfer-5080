@@ -1,0 +1,81 @@
+name: Windows CMake & CUDA Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    env:
+      CUDA_VERSION: "12.4.1" # Adjust to match your target CUDA environment (e.g., 12.x or 13.x)
+      BUILD_TYPE: Release
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive # Crucial for pulling in third_party dependencies
+
+    - name: Cache CUDA Installer
+      id: cache-cuda
+      uses: actions/cache@v4
+      with:
+        path: |
+          C:\cuda_installer
+        key:  runner.os -cuda-{{ env.CUDA_VERSION }}
+
+    - name: Install CUDA Toolkit
+      run: |
+        if (!(Test-Path "C:\cuda_installer")) {
+          New-Item -ItemType Directory -Force -Path "C:\cuda_installer"
+        }
+        
+        # Download CUDA installer if not cached (Example using CUDA 12.4.1)
+        \$cudaUrl = "https://nvidia.com"
+        \$installerPath = "C:\cuda_installer\cuda_install.exe"
+        
+        if (!(Test-Path \$installerPath)) {
+          Write-Host "Downloading CUDA Toolkit..."
+          Invoke-WebRequest -Uri cudaUrl -OutFile installerPath
+        }
+        
+        Write-Host "Installing CUDA (this may take a few minutes)..."
+        # Quiet install, extraction path, and specific modules (nvcc, thrust, cudart, etc.)
+        Start-Process -FilePath \$installerPath -ArgumentList "-s nvcc_12.4 thrust_12.4 cublas_12.4 cublas_dev_12.4 cudart_12.4" -Wait -NoNewWindow
+        
+        # Verify installation path and append to Environment
+        \$cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+        echo "CUDA_PATH=cudaPath" >> env:GITHUB_ENV
+        echo "\(cudaPath\bin" >> \)env:GITHUB_PATH
+      shell: powershell
+
+    - name: Verify NVCC Compiler
+      run: |
+        nvcc --version
+      shell: powershell
+
+    - name: Configure CMake
+      run: |
+        cmake -B \${{github.workspace}}/build `
+              -DCMAKE_BUILD_TYPE=\${{env.BUILD_TYPE}} `
+              -T v143 `
+              -A x64
+      shell: powershell
+
+    - name: Build Project
+      run: |
+        cmake --build github.workspace/build --config {{env.BUILD_TYPE}} --parallel
+      shell: powershell
+
+    - name: Upload Build Artifacts
+      uses: actions/artifacts@v4
+      with:
+        name: ninfer-5080-windows-release
+        path: |
+          \${{github.workspace}}/build/**/*.exe
+          \${{github.workspace}}/build/**/*.dll
