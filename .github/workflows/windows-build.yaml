@@ -12,7 +12,7 @@ jobs:
     runs-on: windows-2022
 
     env:
-      CUDA_VERSION: "12.4.1" # Adjust to match your target CUDA environment (e.g., 12.x or 13.x)
+      CUDA_VERSION: "13.4" # Adjust to match your target CUDA environment (e.g., 12.x or 13.x)
       BUILD_TYPE: Release
 
     steps:
