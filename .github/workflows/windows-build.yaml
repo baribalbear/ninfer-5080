@@ -45,14 +45,23 @@ jobs:
         run: |
           winget install --id Microsoft.VisualStudio.BuildTools `
             --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
-
-      - name: Configure
+        
+      - name: Configure + build (Ninja)
         run: |
-          $env:LIB += ";$env:CUDA_LIB"
-          cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -DCMAKE_CUDA_ARCHITECTURES="120a"
+          & "C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+          $ver = (Get-ChildItem $cudaRoot).Name
+          $env:PATH += ";$cudaRoot\$ver\bin"
 
-      - name: Build
-        run: cmake --build build --config Release --parallel
+          # sanity probe: nvcc standalone, proves the toolkit is sound
+          Set-Content probe.cu "int main(){return 0;}"
+          nvcc probe.cu -o probe.exe
+
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_CUDA_COMPILER="$cudaRoot\$ver\bin\nvcc.exe" `
+            -DCMAKE_CUDA_ARCHITECTURES="120a"
+          cmake --build build
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
