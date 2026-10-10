@@ -28,6 +28,11 @@ jobs:
       - name: Verify
         run: nvcc --version
 
+      - name: Install MSVC Build Tools
+        run: |
+          winget install --id Microsoft.VisualStudio.2022.BuildTools `
+            --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
+
       - name: Configure
         run: |
           $env:LIB += ";$env:CUDA_LIB"
