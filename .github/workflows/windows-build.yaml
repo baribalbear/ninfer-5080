@@ -25,6 +25,19 @@ jobs:
           Add-Content $env:GITHUB_ENV "CUDA_BIN=$root\$ver\bin"
           Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
 
+      - name: Expose CUDA toolkit to CMake
+        run: |
+          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+          $ver = Get-ChildItem $root |
+                 Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
+                 Select-Object -First 1 -ExpandProperty Name
+          if (-not (Test-Path "$root\$ver\bin\nvcc.exe")) { throw "CUDA toolkit not found at $root\$ver" }
+          Add-Content $env:GITHUB_PATH "$root\$ver\bin"
+          Add-Content $env:GITHUB_ENV "CUDA_TOOLKIT_ROOT=$root\$ver"
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=$root\$ver"
+          Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
+          Add-Content $env:GITHUB_ENV "CudaToolkitDir=$root\$ver"
+
       - name: Verify
         run: nvcc --version
 
