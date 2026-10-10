@@ -1,81 +1,76 @@
-name: Windows CMake & CUDA Build
+name: Build Windows CUDA 13.4
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build-windows:
     runs-on: windows-2022
 
-    env:
-      CUDA_VERSION: "13.4" # Adjust to match your target CUDA environment (e.g., 12.x or 13.x)
-      BUILD_TYPE: Release
-
     steps:
-    - name: Checkout repository
+    - name: Checkout Source Code
       uses: actions/checkout@v4
       with:
-        submodules: recursive # Crucial for pulling in third_party dependencies
+        submodules: recursive  # Crucial for NInfer's third_party dependencies
 
     - name: Cache CUDA Installer
       id: cache-cuda
       uses: actions/cache@v4
       with:
-        path: |
-          C:\cuda_installer
-        key:  runner.os -cuda-{{ env.CUDA_VERSION }}
+        path: C:\cuda_installer
+        key: cuda-13.4.92-windows
 
-    - name: Install CUDA Toolkit
-      run: |
-        if (!(Test-Path "C:\cuda_installer")) {
-          New-Item -ItemType Directory -Force -Path "C:\cuda_installer"
-        }
-        
-        # Download CUDA installer if not cached (Example using CUDA 12.4.1)
-        \$cudaUrl = "https://nvidia.com"
-        \$installerPath = "C:\cuda_installer\cuda_install.exe"
-        
-        if (!(Test-Path \$installerPath)) {
-          Write-Host "Downloading CUDA Toolkit..."
-          Invoke-WebRequest -Uri cudaUrl -OutFile installerPath
-        }
-        
-        Write-Host "Installing CUDA (this may take a few minutes)..."
-        # Quiet install, extraction path, and specific modules (nvcc, thrust, cudart, etc.)
-        Start-Process -FilePath \$installerPath -ArgumentList "-s nvcc_12.4 thrust_12.4 cublas_12.4 cublas_dev_12.4 cudart_12.4" -Wait -NoNewWindow
-        
-        # Verify installation path and append to Environment
-        \$cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
-        echo "CUDA_PATH=cudaPath" >> env:GITHUB_ENV
-        echo "\(cudaPath\bin" >> \)env:GITHUB_PATH
+    - name: Download CUDA 13.4
+      if: steps.cache-cuda.outputs.cache-hit != 'true'
       shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\cuda_installer
+        # Replace the URL below with the official NVIDIA CUDA 13.4 Windows network/local installer URL once released
+        \$url = "https://nvidia.com"
+        Invoke-WebRequest -Uri \$url -OutFile "C:\cuda_installer\cuda_installer.exe"
 
-    - name: Verify NVCC Compiler
-      run: |
-        nvcc --version
+    - name: Install CUDA 13.4
       shell: powershell
+      run: |
+        echo "Installing CUDA Toolkit..."
+        # Perform a silent installation of core toolkit components needed for compilation
+        Start-Process -FilePath "C:\cuda_installer\cuda_installer.exe" -ArgumentList "-s", "nvcc_13.4", "cuobjdump_13.4", "nvprune_13.4", "cupti_13.4", "cublas_13.4", "cublas_dev_13.4", "cudart_13.4", "cufft_13.4", "cufft_dev_13.4", "curand_13.4", "curand_dev_13.4", "cusolver_13.4", "cusolver_dev_13.4", "cusparse_13.4", "cusparse_dev_13.4", "visual_studio_integration_13.4" -Wait -NoNewWindow
+        
+        # Manually force environment paths if the installer finishes too quickly for the runner profile to refresh
+        \$env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4"
+        env:PATH = "env:CUDA_PATH\bin;\(env:CUDA_PATH\libnvvp;\)env:PATH"
+        echo "CUDA_PATH=\(env:CUDA_PATH" >> \)env:GITHUB_ENV
+        echo "\(env:CUDA_PATH\bin" >> \)env:GITHUB_PATH
+
+    - name: Set up MSVC (Developer Command Prompt)
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
 
     - name: Configure CMake
+      shell: pwsh
       run: |
-        cmake -B \${{github.workspace}}/build `
-              -DCMAKE_BUILD_TYPE=\${{env.BUILD_TYPE}} `
-              -T v143 `
-              -A x64
-      shell: powershell
+        # Pass the CUDA host compiler explicitly to avoid MSVC mismatch issues
+        cmake -B build -S . `
+          -G "Visual Studio 17 2022" `
+          -A x64 `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_CUDA_COMPILER="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.4/bin/nvcc.exe"
 
     - name: Build Project
+      shell: pwsh
       run: |
-        cmake --build github.workspace/build --config {{env.BUILD_TYPE}} --parallel
-      shell: powershell
+        cmake --build build --config Release --parallel 4
 
     - name: Upload Build Artifacts
       uses: actions/artifacts@v4
       with:
-        name: ninfer-5080-windows-release
+        name: ninfer-windows-cuda13.4
         path: |
-          \${{github.workspace}}/build/**/*.exe
-          \${{github.workspace}}/build/**/*.dll
+          build/apps/Release/
+          build/bin/Release/
+
