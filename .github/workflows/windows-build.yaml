@@ -1,75 +1,43 @@
-name: Build Windows CUDA 13.4
+name: Build (Windows + latest CUDA)
 
 on:
   push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  build-windows:
-    runs-on: windows-2022
-
+  build:
+    runs-on: windows-latest
     steps:
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive  # Crucial for NInfer's third_party dependencies
+      - uses: actions/checkout@v4
 
-    - name: Cache CUDA Installer
-      id: cache-cuda
-      uses: actions/cache@v4
-      with:
-        path: C:\cuda_installer
-        key: cuda-13.4.92-windows
+      - name: Install latest CUDA toolkit
+        run: winget install --id NVIDIA.CUDA --silent --accept-source-agreements --accept-package-agreements
 
-    - name: Download CUDA 13.4
-      if: steps.cache-cuda.outputs.cache-hit != 'true'
-      shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path C:\cuda_installer
-        # Replace the URL below with the official NVIDIA CUDA 13.4 Windows network/local installer URL once released
-        \$url = "https://nvidia.com"
-        Invoke-WebRequest -Uri \$url -OutFile "C:\cuda_installer\cuda_installer.exe"
+      - name: Detect installed CUDA version
+        run: |
+          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+          $ver = Get-ChildItem $root |
+                 Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
+                 Select-Object -First 1 -ExpandProperty Name
+          Write-Host "Using CUDA $ver"
+          Add-Content $env:GITHUB_PATH "$root\$ver\bin"
+          Add-Content $env:GITHUB_ENV "CUDA_BIN=$root\$ver\bin"
+          Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
 
-    - name: Install CUDA 13.4
-      shell: powershell
-      run: |
-        echo "Installing CUDA Toolkit..."
-        # Perform a silent installation of core toolkit components needed for compilation
-        Start-Process -FilePath "C:\cuda_installer\cuda_installer.exe" -ArgumentList "-s", "nvcc_13.4", "cuobjdump_13.4", "nvprune_13.4", "cupti_13.4", "cublas_13.4", "cublas_dev_13.4", "cudart_13.4", "cufft_13.4", "cufft_dev_13.4", "curand_13.4", "curand_dev_13.4", "cusolver_13.4", "cusolver_dev_13.4", "cusparse_13.4", "cusparse_dev_13.4", "visual_studio_integration_13.4" -Wait -NoNewWindow
-        
-        # Manually force environment paths if the installer finishes too quickly for the runner profile to refresh
-        \$env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4"
-        env:PATH = "env:CUDA_PATH\bin;\(env:CUDA_PATH\libnvvp;\)env:PATH"
-        echo "CUDA_PATH=\(env:CUDA_PATH" >> \)env:GITHUB_ENV
-        echo "\(env:CUDA_PATH\bin" >> \)env:GITHUB_PATH
+      - name: Verify
+        run: nvcc --version
 
-    - name: Set up MSVC (Developer Command Prompt)
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: x64
+      - name: Configure
+        run: |
+          $env:LIB += ";$env:CUDA_LIB"
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_CUDA_ARCHITECTURES="120"
 
-    - name: Configure CMake
-      shell: pwsh
-      run: |
-        # Pass the CUDA host compiler explicitly to avoid MSVC mismatch issues
-        cmake -B build -S . `
-          -G "Visual Studio 17 2022" `
-          -A x64 `
-          -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_CUDA_COMPILER="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.4/bin/nvcc.exe"
+      - name: Build
+        run: cmake --build build --config Release --parallel
 
-    - name: Build Project
-      shell: pwsh
-      run: |
-        cmake --build build --config Release --parallel 4
-
-    - name: Upload Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ninfer-windows-cuda13.4
-        path: |
-          build/apps/Release/
-          build/bin/Release/
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninner-windows-x64
+          path: build/
