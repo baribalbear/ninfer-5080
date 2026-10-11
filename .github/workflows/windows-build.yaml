@@ -61,11 +61,11 @@ jobs:
           Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegDir"
           Remove-Item ffmpeg.zip
 
-      - name: Install libcurl
+      - name: Install C dependencies (libcurl, zlib)
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg C:\vcpkg
           C:\vcpkg\bootstrap-vcpkg.bat
-          C:\vcpkg\vcpkg install curl:x64-windows-static
+          C:\vcpkg\vcpkg install curl:x64-windows-static zlib:x64-windows-static
           $curlRoot = "C:\vcpkg\installed\x64-windows-static"
           if (-not (Test-Path "$curlRoot\include\curl\curl.h")) { throw "curl headers missing at $curlRoot\include" }
           Add-Content $env:GITHUB_PATH "$curlRoot\bin"
@@ -87,8 +87,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CUDA_COMPILER="$cudaRoot\$ver\bin\nvcc.exe" `
             -DCMAKE_CUDA_ARCHITECTURES="120a" `
-            -DCURL_INCLUDE_DIR="$env:CURL_INCLUDE_DIR" `
-            -DCURL_LIBRARY="$env:CURL_LIBRARY"
+            -DCMAKE_PREFIX_PATH="C:\vcpkg\installed\x64-windows-static"
           cmake --build build
 
       - name: Upload artifacts
@@ -96,4 +95,5 @@ jobs:
         with:
           name: ninner-windows-x64
           path: build/
+
 
