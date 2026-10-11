@@ -46,6 +46,32 @@ jobs:
           winget install --id Microsoft.VisualStudio.BuildTools `
             --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
         
+      - name: Install FFMPEG
+        run: |
+          $release = (Invoke-RestMethod "https://api.github.com/repos/BtbN/FFMPEG-Builds/releases/latest").assets |
+                     Where-Object { $_.name -match "win64-gpl-shared\.zip" } |
+                     Select-Object -First 1
+          if (-not $release) { throw "FFMPEG win64 shared asset not found" }
+          Write-Host "Downloading $($release.name) ..."
+          Invoke-WebRequest -Uri $release.browser_download_url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath C:\ffmpeg
+          $ffmpegDir = (Get-ChildItem C:\ffmpeg -Directory | Select-Object -First 1).FullName
+          if (-not (Test-Path "$ffmpegDir\include\libavformat\avformat.h")) { throw "FFMPEG headers missing at $ffmpegDir\include" }
+          Add-Content $env:GITHUB_PATH "$ffmpegDir\bin"
+          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegDir"
+          Remove-Item ffmpeg.zip
+
+      - name: Install libcurl
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+          C:\vcpkg\vcpkg install curl:x64-windows-static
+          $curlRoot = "C:\vcpkg\installed\x64-windows-static"
+          if (-not (Test-Path "$curlRoot\include\curl\curl.h")) { throw "curl headers missing at $curlRoot\include" }
+          Add-Content $env:GITHUB_PATH "$curlRoot\bin"
+          Add-Content $env:GITHUB_ENV "CURL_INCLUDE_DIR=$curlRoot\include"
+          Add-Content $env:GITHUB_ENV "CURL_LIBRARY=$curlRoot\lib\libcurl.lib"
+
       - name: Configure + build (Ninja)
         run: |
           & "C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
@@ -60,7 +86,9 @@ jobs:
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CUDA_COMPILER="$cudaRoot\$ver\bin\nvcc.exe" `
-            -DCMAKE_CUDA_ARCHITECTURES="120a"
+            -DCMAKE_CUDA_ARCHITECTURES="120a" `
+            -DCURL_INCLUDE_DIR="$env:CURL_INCLUDE_DIR" `
+            -DCURL_LIBRARY="$env:CURL_LIBRARY"
           cmake --build build
 
       - name: Upload artifacts
@@ -68,3 +96,4 @@ jobs:
         with:
           name: ninner-windows-x64
           path: build/
+
