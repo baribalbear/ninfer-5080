@@ -74,7 +74,7 @@ set_target_properties(PkgConfig::FFMPEG PROPERTIES
 
 # --- libCurl ------------------------------------------------------------------
 if(NINFER_BUILD_MEDIA_ACQUIRE)
-  find_package(CURL REQUIRED)
+  find_package(CURL MODULE REQUIRED)
   add_library(PkgConfig::LIBCURL ALIAS CURL::libcurl)
 endif()
 find_package(Threads REQUIRED)
@@ -91,4 +91,5 @@ endif()
 if(NINFER_BUILD_BENCHMARKS)
   add_subdirectory(bench)
 endif()
+
 
