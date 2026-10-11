@@ -14,17 +14,6 @@ jobs:
       - name: Install latest CUDA toolkit
         run: winget install --id NVIDIA.CUDA --silent --accept-source-agreements --accept-package-agreements
 
-      - name: Detect installed CUDA version
-        run: |
-          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-          $ver = Get-ChildItem $root |
-                 Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
-                 Select-Object -First 1 -ExpandProperty Name
-          Write-Host "Using CUDA $ver"
-          Add-Content $env:GITHUB_PATH "$root\$ver\bin"
-          Add-Content $env:GITHUB_ENV "CUDA_BIN=$root\$ver\bin"
-          Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
-
       - name: Expose CUDA toolkit to CMake
         run: |
           $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
@@ -32,11 +21,12 @@ jobs:
                  Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
                  Select-Object -First 1 -ExpandProperty Name
           if (-not (Test-Path "$root\$ver\bin\nvcc.exe")) { throw "CUDA toolkit not found at $root\$ver" }
+          Write-Host "Using CUDA $ver"
           Add-Content $env:GITHUB_PATH "$root\$ver\bin"
-          Add-Content $env:GITHUB_ENV "CUDA_TOOLKIT_ROOT=$root\$ver"
+          Add-Content $env:GITHUB_ENV "CUDA_ROOT=$root\$ver"
           Add-Content $env:GITHUB_ENV "CUDA_PATH=$root\$ver"
-          Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
           Add-Content $env:GITHUB_ENV "CudaToolkitDir=$root\$ver"
+          Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
 
       - name: Verify
         run: nvcc --version
@@ -45,7 +35,7 @@ jobs:
         run: |
           winget install --id Microsoft.VisualStudio.BuildTools `
             --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
-        
+
       - name: Install FFMPEG
         run: |
           $release = (Invoke-RestMethod "https://api.github.com/repos/BtbN/FFMPEG-Builds/releases/latest").assets |
@@ -74,9 +64,20 @@ jobs:
 
       - name: Configure + build (Ninja)
         run: |
-          & "C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          # Detect the Visual Studio installation (any edition/version) instead
+          # of hardcoding a path; the runner ships VS 2022, not VS 2026.
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath -format value
+          if (-not $vsPath) { $vsPath = & $vswhere -latest -products * -property installationPath -format value }
+          if (-not $vsPath) { throw "No Visual Studio installation with C++ tools found" }
+          Write-Host "Using Visual Studio at $vsPath"
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+
           $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-          $ver = (Get-ChildItem $cudaRoot).Name
+          $ver = Get-ChildItem $cudaRoot |
+                 Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
+                 Select-Object -First 1 -ExpandProperty Name
           $env:PATH += ";$cudaRoot\$ver\bin"
 
           # sanity probe: nvcc standalone, proves the toolkit is sound
@@ -85,18 +86,14 @@ jobs:
 
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="C:\vcpkg\installed\x64-windows-static" `
             -DCMAKE_CUDA_COMPILER="$cudaRoot\$ver\bin\nvcc.exe" `
-            -DCMAKE_CUDA_ARCHITECTURES="120a" `
-            -DCURL_INCLUDE_DIR="C:\vcpkg\installed\x64-windows-static\include" `
-            -DCURL_LIBRARY="C:\vcpkg\installed\x64-windows-static\lib\libcurl.lib"
+            -DCMAKE_CUDA_ARCHITECTURES="120a"
           cmake --build build
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ninner-windows-x64
+          name: ninfer-windows-x64
           path: build/
-
-
-
 
