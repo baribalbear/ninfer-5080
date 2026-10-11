@@ -87,8 +87,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CUDA_COMPILER="$cudaRoot\$ver\bin\nvcc.exe" `
             -DCMAKE_CUDA_ARCHITECTURES="120a" `
-            -DCMAKE_PREFIX_PATH="C:\vcpkg\installed\x64-windows-static" `
-            -DZLIB_ROOT="C:\vcpkg\installed\x64-windows-static"
+            -DCURL_INCLUDE_DIR="C:\vcpkg\installed\x64-windows-static\include" `
+            -DCURL_LIBRARY="C:\vcpkg\installed\x64-windows-static\lib\libcurl.lib"
           cmake --build build
 
       - name: Upload artifacts
@@ -96,6 +96,7 @@ jobs:
         with:
           name: ninner-windows-x64
           path: build/
+
 
 
 
