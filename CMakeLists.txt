@@ -55,11 +55,27 @@ if(NINFER_BUILD_APPS OR BUILD_TESTING)
 endif()
 
 find_package(CUDAToolkit REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-  libavformat>=60 libavcodec>=60 libavutil>=58 libswscale>=7)
+# --- FFMPEG (direct lookup, no pkg-config needed) ---------------------------
+find_path(FFMPEG_INCLUDE_DIR
+  NAMES libavformat/avformat.h
+  PATHS C:/ffmpeg/include C:/msys64/mingw64/include $ENV{FFMPEG_DIR}/include)
+find_library(AVFORMAT_LIB  NAMES avformat avformat-60  PATHS C:/ffmpeg/lib C:/msys64/mingw64/lib $ENV{FFMPEG_DIR}/lib)
+find_library(AVCODEC_LIB   NAMES avcodec   avcodec-60   PATHS C:/ffmpeg/lib C:/msys64/mingw64/lib $ENV{FFMPEG_DIR}/lib)
+find_library(AVUTIL_LIB    NAMES avutil    avutil-58    PATHS C:/ffmpeg/lib C:/msys64/mingw64/lib $ENV{FFMPEG_DIR}/lib)
+find_library(SWSCALE_LIB   NAMES swscale   swscale-7    PATHS C:/ffmpeg/lib C:/msys64/mingw64/lib $ENV{FFMPEG_DIR}/lib)
+
+if(NOT FFMPEG_INCLUDE_DIR OR NOT AVFORMAT_LIB OR NOT AVCODEC_LIB OR NOT AVUTIL_LIB OR NOT SWSCALE_LIB)
+  message(FATAL_ERROR "FFMPEG not found. Set FFMPEG_DIR or install FFMPEG.")
+endif()
+add_library(PkgConfig::FFMPEG INTERFACE IMPORTED)
+set_target_properties(PkgConfig::FFMPEG PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIR}"
+  INTERFACE_LINK_LIBRARIES     "${AVFORMAT_LIB};${AVCODEC_LIB};${AVUTIL_LIB};${SWSCALE_LIB}")
+
+# --- libCurl ------------------------------------------------------------------
 if(NINFER_BUILD_MEDIA_ACQUIRE)
-  pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl>=7.85)
+  find_package(CURL REQUIRED)
+  add_library(PkgConfig::LIBCURL ALIAS CURL::libcurl)
 endif()
 find_package(Threads REQUIRED)
 
@@ -75,3 +91,4 @@ endif()
 if(NINFER_BUILD_BENCHMARKS)
   add_subdirectory(bench)
 endif()
+
