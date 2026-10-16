@@ -1,99 +1,176 @@
-name: Build (Windows + latest CUDA)
+name: Windows native build
 
 on:
   push:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-native-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned toolchain artifacts. Keep these in lockstep with
+  # docs/REPRODUCIBILITY.md when the CUDA baseline changes.
+  CMAKE_VERSION: "4.4.4"
+  CMAKE_ZIP_URL: "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-windows-x86_64.zip"
+  CMAKE_ZIP_SHA256: "bace36e94b31c68ab6fa295f26dfa11219e0701cf7c94b0284a7d1cb13dac536"
+  VCPKG_TAG: "2026.07.29"
+  CUDA_INSTALLER_URL: "https://developer.download.nvidia.com/compute/cuda/13.4.1/local_installers/cuda_13.4.1_windows_x86_64.exe"
+  CUDA_INSTALLER_SHA256: "632a5912995473cea77b24788715b8d94db17a94cfea102a12f72c3614fe8c7e"
+  # Default silent-install location for the CUDA toolkit bundle.
+  CUDA_ROOT: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4
+  MSYS2_INSTALLER_URL: "https://github.com/msys2/msys2-installer/releases/download/2026-09-27/msys2-x86_64-20260927.exe"
+
 jobs:
   build:
+    # Native Windows build gate: MSVC (Visual Studio Build Tools, preinstalled
+    # on windows-latest) + nvcc for sm_120a + native MSVC FFmpeg/libcurl
+    # built by vcpkg. GitHub-hosted runners have no GPU, so this job compiles
+    # and links only; it is not an execution test.
     runs-on: windows-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
 
-      - name: Install latest CUDA toolkit
-        run: winget install --id NVIDIA.CUDA --silent --accept-source-agreements --accept-package-agreements
-
-      - name: Expose CUDA toolkit to CMake
+      - name: Install pinned CMake
+        shell: pwsh
         run: |
-          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-          $ver = Get-ChildItem $root |
-                 Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
-                 Select-Object -First 1 -ExpandProperty Name
-          if (-not (Test-Path "$root\$ver\bin\nvcc.exe")) { throw "CUDA toolkit not found at $root\$ver" }
-          Write-Host "Using CUDA $ver"
-          Add-Content $env:GITHUB_PATH "$root\$ver\bin"
-          Add-Content $env:GITHUB_ENV "CUDA_ROOT=$root\$ver"
-          Add-Content $env:GITHUB_ENV "CUDA_PATH=$root\$ver"
-          Add-Content $env:GITHUB_ENV "CudaToolkitDir=$root\$ver"
-          Add-Content $env:GITHUB_ENV "CUDA_LIB=$root\$ver\lib\x64"
+          $ErrorActionPreference = "Stop"
+          $zip = Join-Path $env:RUNNER_TEMP "cmake-windows-x86_64.zip"
+          Invoke-WebRequest -Uri $env:CMAKE_ZIP_URL -OutFile $zip
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          if ($hash -ne $env:CMAKE_ZIP_SHA256) { throw "CMake zip SHA256 mismatch: $hash" }
+          Expand-Archive -Path $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "cmake")
+          $bin = Join-Path $env:RUNNER_TEMP "cmake\cmake-$env:CMAKE_VERSION-windows-x86_64\bin"
+          if (-not (Test-Path $bin)) { throw "CMake bin dir not found at $bin" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          cmake --version
 
-      - name: Verify
-        run: nvcc --version
-
-      - name: Install MSVC Build Tools
+      - name: Install MSYS2 and pkg-config
+        shell: pwsh
         run: |
-          winget install --id Microsoft.VisualStudio.BuildTools `
-            --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
+          $ErrorActionPreference = "Stop"
+          $msys2 = "C:\msys64"
 
-      - name: Install FFMPEG
+          $installer = Join-Path $env:RUNNER_TEMP "msys2-x86_64.exe"
+          Invoke-WebRequest -Uri $env:MSYS2_INSTALLER_URL -OutFile $installer
+          $proc = Start-Process -FilePath $installer -ArgumentList "/quiet" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "MSYS2 installer exited with $($proc.ExitCode)" }
+
+          & "$msys2\usr\bin\bash.exe" -lc "pacman -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-pkgconf"
+
+          # CMake's PkgConfig module searches for pkg-config; the ucrt64
+          # pkgconf package may ship only pkgconf.exe.
+          $pkgconf = "$msys2\ucrt64\bin\pkgconf.exe"
+          $pkgconfig = "$msys2\ucrt64\bin\pkg-config.exe"
+          if ((Test-Path $pkgconf) -and -not (Test-Path $pkgconfig)) {
+            Copy-Item $pkgconf $pkgconfig
+          }
+          if (-not (Test-Path $pkgconfig)) { throw "pkg-config executable not found under $msys2\ucrt64\bin" }
+          & $pkgconfig --version
+
+      - name: Bootstrap pinned vcpkg
+        shell: pwsh
         run: |
-          $release = (Invoke-RestMethod "https://api.github.com/repos/BtbN/FFMPEG-Builds/releases/latest").assets |
-                     Where-Object { $_.name -match "win64-gpl-shared\.zip" } |
-                     Select-Object -First 1
-          if (-not $release) { throw "FFMPEG win64 shared asset not found" }
-          Write-Host "Downloading $($release.name) ..."
-          Invoke-WebRequest -Uri $release.browser_download_url -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath C:\ffmpeg
-          $ffmpegDir = (Get-ChildItem C:\ffmpeg -Directory | Select-Object -First 1).FullName
-          if (-not (Test-Path "$ffmpegDir\include\libavformat\avformat.h")) { throw "FFMPEG headers missing at $ffmpegDir\include" }
-          Add-Content $env:GITHUB_PATH "$ffmpegDir\bin"
-          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=$ffmpegDir"
-          Remove-Item ffmpeg.zip
+          $ErrorActionPreference = "Stop"
+          $vcpkg = Join-Path $env:RUNNER_TEMP "vcpkg"
+          git clone --depth 1 --branch $env:VCPKG_TAG https://github.com/microsoft/vcpkg $vcpkg
+          Push-Location $vcpkg
+          sh bootstrap-vcpkg.sh
+          .\vcpkg.exe version
 
-      - name: Install C dependencies (libcurl, zlib)
+      - name: Install native MSVC dependencies (FFmpeg, libcurl)
+        shell: pwsh
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-          C:\vcpkg\vcpkg install curl:x64-windows-static zlib:x64-windows-static
-          $curlRoot = "C:\vcpkg\installed\x64-windows-static"
-          if (-not (Test-Path "$curlRoot\include\curl\curl.h")) { throw "curl headers missing at $curlRoot\include" }
-          Add-Content $env:GITHUB_PATH "$curlRoot\bin"
-          Add-Content $env:GITHUB_ENV "CURL_INCLUDE_DIR=$curlRoot\include"
-          Add-Content $env:GITHUB_ENV "CURL_LIBRARY=$curlRoot\lib\libcurl.lib"
+          $ErrorActionPreference = "Stop"
+          $vcpkg = Join-Path $env:RUNNER_TEMP "vcpkg"
+          $installed = Join-Path $env:RUNNER_TEMP "vcpkg-installed"
 
-      - name: Configure + build (Ninja)
+          # Port "curl" provides libcurl (see ports/curl in the vcpkg repo).
+          & "$vcpkg\vcpkg.exe" install --triplet x64-windows --x-install-root $installed ffmpeg curl
+
+          # The C++ build discovers FFmpeg/libcurl through pkg-config .pc
+          # files generated by the vcpkg ports.
+          $pcdir = Join-Path $installed "lib\pkgconfig"
+          $pcfiles = Get-ChildItem $pcdir -Filter "*.pc" | Select-Object -ExpandProperty Name
+          Write-Host "pkgconfig modules: $($pcfiles -join ', ')"
+          foreach ($need in "libavformat.pc","libavcodec.pc","libavutil.pc","libswscale.pc","libcurl.pc") {
+            if ($pcfiles -notcontains $need) { throw "missing $need in $pcdir" }
+          }
+
+      - name: Install CUDA toolkit
+        shell: pwsh
         run: |
-          # Detect the Visual Studio installation (any edition/version) instead
-          # of hardcoding a path; the runner ships VS 2022, not VS 2026.
-          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath -format value
-          if (-not $vsPath) { $vsPath = & $vswhere -latest -products * -property installationPath -format value }
-          if (-not $vsPath) { throw "No Visual Studio installation with C++ tools found" }
-          Write-Host "Using Visual Studio at $vsPath"
-          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "cuda_windows_x86_64.exe"
+          Invoke-WebRequest -Uri $env:CUDA_INSTALLER_URL -OutFile $installer
+          if ($env:CUDA_INSTALLER_SHA256) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash.ToLower()
+            if ($hash -ne $env:CUDA_INSTALLER_SHA256) {
+              throw "CUDA installer SHA256 mismatch: expected $($env:CUDA_INSTALLER_SHA256), got $hash"
+            }
+          }
 
-          $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-          $ver = Get-ChildItem $cudaRoot |
-                 Sort-Object { [version]($_.Name -replace '^v','') } -Descending |
-                 Select-Object -First 1 -ExpandProperty Name
-          $env:PATH += ";$cudaRoot\$ver\bin"
+          # Silent install. Since CUDA 13.1 the Windows toolkit no longer
+          # bundles the GPU driver, so no driver is installed here.
+          $proc = Start-Process -FilePath $installer -ArgumentList "/s" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "CUDA installer exited with $($proc.ExitCode)" }
 
-          # sanity probe: nvcc standalone, proves the toolkit is sound
-          Set-Content probe.cu "int main(){return 0;}"
-          nvcc probe.cu -o probe.exe
+          $nvcc = Join-Path $env:CUDA_ROOT "bin\nvcc.exe"
+          if (-not (Test-Path $nvcc)) { throw "nvcc not found at $nvcc" }
+          & $nvcc --version
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:CUDA_ROOT "bin")
 
-          cmake -S . -B build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="C:\vcpkg\installed\x64-windows-static" `
-            -DCMAKE_CUDA_COMPILER="$cudaRoot\$ver\bin\nvcc.exe" `
-            -DCMAKE_CUDA_ARCHITECTURES="120a"
-          cmake --build build
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PKG_CONFIG_LIBDIR = Join-Path (Join-Path $env:RUNNER_TEMP "vcpkg-installed") "lib\pkgconfig"
+          $env:PKG_CONFIG_PATH = $env:PKG_CONFIG_LIBDIR
 
-      - name: Upload artifacts
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+
+      - name: Validate build artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifacts = @("build\apps\ninfer.exe", "build\apps\ninfer-serve.exe")
+          foreach ($path in $artifacts) {
+            if (-not (Test-Path $path)) { throw "missing build artifact $path" }
+            "{0}: {1} bytes" -f $path, (Get-Item $path).Length
+          }
+
+          $env:PKG_CONFIG_LIBDIR = Join-Path (Join-Path $env:RUNNER_TEMP "vcpkg-installed") "lib\pkgconfig"
+          $env:PKG_CONFIG_PATH = $env:PKG_CONFIG_LIBDIR
+
+          Write-Host "=== toolchain summary ==="
+          cmake --version | Select-Object -First 1
+          & "$env:CUDA_ROOT\bin\nvcc.exe" --version
+          & "C:\msys64\ucrt64\bin\pkg-config.exe" --modversion libavformat libavcodec libavutil libswscale libcurl
+
+      - name: Upload Windows binaries
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ninfer-windows-x64
-          path: build/
+          name: ninfer-windows-x64-sm120a
+          path: |
+            build/apps/ninfer.exe
+            build/apps/ninfer-serve.exe
+          if-no-files-found: error
 
+      - name: Write job summary
+        if: always()
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Windows native build"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Native MSVC + CUDA 13.4 build for sm_120a (compile/link only; no GPU on hosted runners)."
+          
