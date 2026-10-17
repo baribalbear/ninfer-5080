@@ -308,7 +308,9 @@ jobs:
             # source file); both prove the compiler is present and runnable.
             @("cl.exe", @(), @(0, 2)),
             @("C:\ninfer-tools\bin\pkg-config.exe", @("--version")),
-            @("C:\ninfer-tools\bin\pkg-config.exe", @("--modversion libavformat libavcodec libavutil libswscale libcurl"))
+            # Args must be separate tokens: splatting one space-joined string
+            # would hand pkg-config a single bogus argument.
+            @("C:\ninfer-tools\bin\pkg-config.exe", @("--modversion", "libavformat", "libavcodec", "libavutil", "libswscale", "libcurl"))
           )
           foreach ($p in $probes) {
             $exe = $p[0]
@@ -326,10 +328,13 @@ jobs:
               throw
             }
             $code = $LASTEXITCODE
-            $first = (($out -split "\r?\n") | Where-Object { $_.Trim() })[0]
+            $nonempty = [string[]]@(($out -split "\r?\n") | Where-Object { $_.Trim() })
+            $first = if ($nonempty.Count -gt 0) { $nonempty[0] } else { "(no output)" }
             Write-Host "probe: $exe $($pargs -join ' ') -> exit $code | $first"
             if ($okCodes -notcontains $code) {
-              Write-Annotation "pre-flight probe failed: $exe $($pargs -join ' ') exited $code | $first"
+              $detail = ($nonempty | Select-Object -First 3) -join " | "
+              if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
+              Write-Annotation "pre-flight probe failed: $exe $($pargs -join ' ') exited $code | $detail"
               throw "pre-flight probe failed: $exe $($pargs -join ' ') exited $code"
             }
           }
