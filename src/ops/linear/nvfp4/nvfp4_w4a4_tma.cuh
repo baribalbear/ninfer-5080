@@ -179,9 +179,9 @@ __device__ __forceinline__ void nvfp4_tma_load_2d(void* destination, const CUten
                  : "memory");
 }
 
-// The descriptor struct is 128-byte aligned. It is passed as an ordinary by-value kernel
-// parameter (not __grid_constant__): MSVC rejects 128-byte-aligned by-value parameters in the
-// grid-constant host stub with C2719, while GCC/Clang accept both spellings.
+// The descriptor struct is 128-byte aligned, so the generated MSVC host stub cannot take it
+// as a by-value formal parameter (C2719). It stays an ordinary by-value kernel parameter; the
+// launcher calls cudaLaunchKernel with an argument-pointer array instead of the <<<>>> operator.
 template <class Geometry, class Schedule, class Epilogue, class OutputPolicy>
 __global__
 __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void nvfp4_w4a4_tma_kernel(

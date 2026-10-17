@@ -71,8 +71,14 @@ void launch_tma(const std::uint8_t* activation_codes, const std::uint8_t* activa
     (void)kConfigured;
 
     const dim3 grid(Geometry::kOutputRows / Schedule::kBlockN, tokens / Schedule::kBlockM);
-    nvfp4_w4a4_tma_kernel<Geometry, Schedule>
-        <<<grid, Schedule::kThreads, kSharedBytes, stream>>>(descriptors, alpha, epilogue, output);
+    // Launch through cudaLaunchKernel rather than the <<<>>> operator: on MSVC the generated
+    // host stub takes the kernel parameters by value and rejects the 128-byte-aligned
+    // descriptor struct with C2719. The argument-pointer array lets the runtime copy the
+    // parameters into the kernel parameter buffer without materializing that host stub.
+    void* kernel_args[] = {&descriptors, &alpha, &epilogue, &output};
+    CUDA_CHECK(cudaLaunchKernel(
+        (void*)nvfp4_w4a4_tma_kernel<Geometry, Schedule, Epilogue, Output>, grid,
+        dim3(static_cast<unsigned>(Schedule::kThreads)), kernel_args, kSharedBytes, stream));
     CUDA_CHECK(cudaGetLastError());
 }
 
