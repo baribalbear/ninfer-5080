@@ -52,16 +52,41 @@ jobs:
           $ErrorActionPreference = "Stop"
           $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path $vswhere)) { throw "vswhere not found at $vswhere" }
-          # All VS installations with MSVC tools, newest first.
-          $raw = & $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath,installationVersion
+          # Several vswhere invocations, most specific first (the -latest
+          # form is known to work on this image). Capture both streams and
+          # the exit code so a silent vswhere failure is visible; if none
+          # yields an installation, dump the raw outputs as public
+          # annotations.
+          $attempts = @(
+            @("-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"),
+            @("-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"),
+            @("-latest", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"),
+            @("-all", "-products", "*", "-property", "installationPath"),
+            @("-all", "-property", "installationPath,installationVersion")
+          )
           $installs = @()
-          foreach ($line in (@($raw) | Where-Object { $_ })) {
-            $parts = $line -split ';', 2
-            $installs += @{ Path = $parts[0].Trim(); Version = $parts[1].Trim() }
+          $rawOutputs = @()
+          foreach ($a in $attempts) {
+            $label = $a -join " "
+            $out = (& $vswhere @a 2>&1 | Out-String).Trim()
+            $code = $LASTEXITCODE
+            $rawOutputs += "[$label] exit $code : $out"
+            Write-Host ("vswhere [" + $label + "] exit " + $code + ": " + $out)
+            if ($installs.Count -eq 0) {
+              foreach ($line in (@($out -split "`r?`n") | Where-Object { $_.Trim() })) {
+                $installs += @{ Path = ($line -split ';', 2)[0].Trim() }
+              }
+              $installs = @($installs | Where-Object { Test-Path $_.Path })
+            }
+            if ($installs.Count -gt 0) { break }
           }
-          if ($installs.Count -eq 0) { throw "no Visual Studio installation with MSVC tools found" }
-          $installs = $installs | Sort-Object -Property @{Expression = { $_.Version } } -Descending
-          Write-Host ("VS installations: " + (($installs | ForEach-Object { $_.Version + ' ' + $_.Path }) -join '; '))
+          if ($installs.Count -eq 0) {
+            foreach ($r in $rawOutputs) {
+              [Console]::Error.WriteLine("::error::vswhere " + $r)
+            }
+            throw "vswhere returned no Visual Studio installations (raw outputs in annotations)"
+          }
+          Write-Host ("VS installation(s): " + (($installs | ForEach-Object { $_.Path }) -join "; "))
 
           # Known dev-shell entry points across VS generations.
           function Get-DevShellCandidates { param([string]$Vs)
