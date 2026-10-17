@@ -157,11 +157,15 @@ jobs:
           $env:PKG_CONFIG_PATH = $env:PKG_CONFIG_LIBDIR
           $cfgLog = Join-Path $env:RUNNER_TEMP "cmake-configure.log"
           $buildLog = Join-Path $env:RUNNER_TEMP "cmake-build.log"
-          $summaryLines = @()
 
-          # Pre-flight probes: every external tool the build depends on, each
-          # with an explicit exit code, so the job summary can distinguish a
-          # missing/broken tool from a CMake/source error.
+          # Emits literal ::error:: log commands on stdout: GitHub records them
+          # as public check-run annotations, so the failure text is readable
+          # without authenticated log downloads. Write-Host (not Write-Error)
+          # because Write-Error is a terminating error under EAP=Stop.
+          function Write-Annotation { param([string]$Message) Write-Host "::error::$Message" }
+
+          # Pre-flight probes: every tool the build depends on, with explicit
+          # exit codes, so a missing executable is named in the annotation.
           $probes = @(
             @("cmake", @("--version")),
             @("ninja", @("--version")),
@@ -172,41 +176,53 @@ jobs:
           foreach ($p in $probes) {
             $exe = $p[0]
             $pargs = $p[1]
-            $out = (& $exe @pargs 2>&1 | Out-String)
+            $cmd = Get-Command $exe -ErrorAction SilentlyContinue
+            if (-not $cmd) {
+              Write-Annotation "pre-flight probe failed: executable not found: $exe"
+              throw "executable not found: $exe"
+            }
+            try {
+              $out = (& $exe @pargs 2>&1 | Out-String)
+            } catch {
+              Write-Annotation "pre-flight probe threw for: $exe $($pargs -join ' ') -> $($_.Exception.Message)"
+              throw
+            }
             $code = $LASTEXITCODE
             $first = (($out -split "\r?\n") | Where-Object { $_.Trim() })[0]
             Write-Host "probe: $exe $($pargs -join ' ') -> exit $code | $first"
-            $summaryLines += "probe: $exe $($pargs -join ' ') -> exit $code"
             if ($code -ne 0) {
-              $summaryLines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-              throw "preflight probe failed: $exe $($pargs -join ' ') exited $code"
+              Write-Annotation "pre-flight probe failed: $exe $($pargs -join ' ') exited $code | $first"
+              throw "pre-flight probe failed: $exe $($pargs -join ' ') exited $code"
             }
+          }
+
+          # Reports a cmake phase failure as a public annotation: a header plus
+          # up to 8 error-looking lines from the captured log tail.
+          function Report-CMakeFailure { param([string]$Phase, [int]$ExitCode, [string]$LogPath)
+            Write-Annotation "$Phase failed (exit $ExitCode)"
+            $tail = @()
+            if (Test-Path $LogPath) { $tail = Get-Content $LogPath -Tail 200 }
+            $interesting = @($tail | Where-Object { $_ -match "(?i)\b(error|fatal|failed|undefined|not found|cannot|missing)" })
+            if ($interesting.Count -eq 0 -and $tail.Count -gt 0) { $interesting = $tail | Select-Object -Last 8 }
+            $interesting | Select-Object -First 8 | ForEach-Object { Write-Annotation "$_" }
+            if ($tail.Count -eq 0) { Write-Annotation "(log $LogPath is empty)" }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### $Phase failed (exit $ExitCode)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            $tail | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
           }
 
           & cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release *>&1 | Tee-Object -FilePath $cfgLog
           $cfg = $LASTEXITCODE
           if ($cfg -ne 0) {
-            $tail = Get-Content $cfgLog -Tail 120
-            Write-Host "=== cmake configure failed (exit $cfg); last 120 lines ==="
-            $tail | ForEach-Object { Write-Host $_ }
-            $summaryLines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### CMake configure failed (exit $cfg)"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-            $tail | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Report-CMakeFailure "cmake configure" $cfg $cfgLog
             throw "cmake configure failed with exit code $cfg"
           }
 
           & cmake --build build -j *>&1 | Tee-Object -FilePath $buildLog
           $build = $LASTEXITCODE
           if ($build -ne 0) {
-            $tail = Get-Content $buildLog -Tail 160
-            Write-Host "=== cmake build failed (exit $build); last 160 lines ==="
-            $tail | ForEach-Object { Write-Host $_ }
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### CMake build failed (exit $build)"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-            $tail | Add-Content -Path $env:GITHUB_STEP_SUMMARY
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Report-CMakeFailure "cmake build" $build $buildLog
             throw "cmake build failed with exit code $build"
           }
 
