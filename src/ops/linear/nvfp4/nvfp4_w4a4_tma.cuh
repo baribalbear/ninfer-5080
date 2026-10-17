@@ -179,10 +179,13 @@ __device__ __forceinline__ void nvfp4_tma_load_2d(void* destination, const CUten
                  : "memory");
 }
 
+// The descriptor struct is 128-byte aligned. It is passed as an ordinary by-value kernel
+// parameter (not __grid_constant__): MSVC rejects 128-byte-aligned by-value parameters in the
+// grid-constant host stub with C2719, while GCC/Clang accept both spellings.
 template <class Geometry, class Schedule, class Epilogue, class OutputPolicy>
 __global__
 __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void nvfp4_w4a4_tma_kernel(
-    const __grid_constant__ Nvfp4W4a4TmaDescriptors descriptors, float alpha,
+    const Nvfp4W4a4TmaDescriptors descriptors, float alpha,
     const __grid_constant__ Epilogue epilogue, const __grid_constant__ OutputPolicy output) {
     static_assert((Geometry::kInputRows % Schedule::kBlockK) == 0);
     static_assert((Geometry::kOutputRows % Schedule::kBlockN) == 0);

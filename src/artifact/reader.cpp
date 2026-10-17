@@ -15,10 +15,14 @@
 #include <unordered_map>
 #include <utility>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace ninfer::artifact {
 namespace {
@@ -179,6 +183,89 @@ struct TransparentStringHash {
     }
 };
 
+#if defined(_WIN32)
+
+class MappedFile {
+public:
+    explicit MappedFile(const std::filesystem::path& path) {
+        const HANDLE handle = ::CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+            throw std::system_error(::GetLastError(), std::system_category(),
+                                    "open " + path.string());
+        }
+
+        LARGE_INTEGER size_bytes {};
+        if (!::GetFileSizeEx(handle, &size_bytes) || size_bytes.QuadPart < 0 ||
+            static_cast<std::uint64_t>(size_bytes.QuadPart) >
+                std::numeric_limits<std::size_t>::max()) {
+            const DWORD error = ::GetLastError();
+            ::CloseHandle(handle);
+            throw std::system_error(error, std::system_category(), "stat " + path.string());
+        }
+
+        const auto size  = static_cast<std::size_t>(size_bytes.QuadPart);
+        void*   mapping  = nullptr;
+        if (size != 0) {
+            const HANDLE mapping_handle = ::CreateFileMappingW(handle, nullptr, PAGE_READONLY, 0, 0,
+                                                               nullptr);
+            if (mapping_handle == INVALID_HANDLE_VALUE) {
+                const DWORD error = ::GetLastError();
+                ::CloseHandle(handle);
+                throw std::system_error(error, std::system_category(), "mmap " + path.string());
+            }
+            mapping = ::MapViewOfFile(mapping_handle, FILE_MAP_READ, 0, 0, 0);
+            ::CloseHandle(mapping_handle);
+            if (mapping == nullptr) {
+                const DWORD error = ::GetLastError();
+                ::CloseHandle(handle);
+                throw std::system_error(error, std::system_category(), "mmap " + path.string());
+            }
+        }
+        handle_ = handle;
+        data_   = static_cast<const std::byte*>(mapping);
+        size_   = size;
+    }
+
+    ~MappedFile() {
+        if (data_ != nullptr) { ::UnmapViewOfFile(const_cast<std::byte*>(data_)); }
+        if (handle_ != nullptr) { ::CloseHandle(handle_); }
+    }
+
+    MappedFile(const MappedFile&)            = delete;
+    MappedFile& operator=(const MappedFile&) = delete;
+
+    const std::byte* data() const noexcept { return data_; }
+
+    std::size_t size() const noexcept { return size_; }
+
+    // Windows has no positional direct-I/O read, so the bytes come from the mapped view. The
+    // 4096-byte alignment contract of Reader::read_direct is unchanged.
+    std::size_t read_direct(std::uint64_t absolute_offset, std::span<std::byte> destination) const {
+        constexpr std::size_t alignment = Reader::direct_io_alignment;
+        if (absolute_offset % alignment != 0 || destination.size() % alignment != 0 ||
+            reinterpret_cast<std::uintptr_t>(destination.data()) % alignment != 0) {
+            throw ArtifactError("direct artifact read is not 4096-byte aligned");
+        }
+        const std::uint64_t end = absolute_offset + destination.size();
+        const std::size_t available =
+            end <= size_ ? destination.size()
+                         : size_ > absolute_offset ? static_cast<std::size_t>(size_ - absolute_offset)
+                                                   : 0;
+        if (available != 0) {
+            std::memcpy(destination.data(), data_ + absolute_offset, available);
+        }
+        return available;
+    }
+
+private:
+    HANDLE           handle_ = nullptr;
+    const std::byte* data_   = nullptr;
+    std::size_t      size_   = 0;
+};
+
+#else
+
 class MappedFile {
 public:
     explicit MappedFile(const std::filesystem::path& path) {
@@ -254,6 +341,8 @@ private:
     const std::byte* data_ = nullptr;
     std::size_t size_      = 0;
 };
+
+#endif
 
 } // namespace
 

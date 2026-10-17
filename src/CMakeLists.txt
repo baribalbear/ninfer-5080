@@ -322,6 +322,9 @@ if(NINFER_BUILD_MEDIA_ACQUIRE)
     product/media_acquire/acquire.cpp)
   ninfer_internal_includes(ninfer_media_acquire)
   target_link_libraries(ninfer_media_acquire PRIVATE PkgConfig::LIBCURL)
+  if(WIN32)
+    target_link_libraries(ninfer_media_acquire PRIVATE Ws2_32)
+  endif()
 endif()
 
 if(NINFER_BUILD_PROMPT_INPUT)
@@ -382,4 +385,7 @@ if(NINFER_BUILD_SERVE)
   target_link_libraries(ninfer_serve
     PUBLIC ninfer_engine Threads::Threads
     PRIVATE ninfer_media_acquire CUDA::cudart)
+  if(WIN32)
+    target_link_libraries(ninfer_serve PRIVATE Ws2_32)
+  endif()
 endif()

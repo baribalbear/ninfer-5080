@@ -2,9 +2,14 @@
 
 #include <curl/curl.h>
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -142,6 +147,24 @@ UrlParts parse_url(std::string_view value) {
     return out;
 }
 
+const char* address_to_string(int family, const void* bytes, char* text, std::size_t size) {
+#if defined(_WIN32)
+    return _inet_ntop(family, bytes, text, static_cast<socklen_t>(size));
+#else
+    return ::inet_ntop(family, bytes, text, static_cast<socklen_t>(size));
+#endif
+}
+
+std::string address_error_message(int code) {
+#if defined(_WIN32)
+    // MSVC has no gai_strerror; its getaddrinfo error codes mix EAI_* and WSA* values.
+    return "getaddrinfo failed (code " + std::to_string(code) + ')';
+#else
+    const char* text = gai_strerror(code);
+    return text != nullptr ? text : "getaddrinfo failed";
+#endif
+}
+
 std::string resolve_public(const UrlParts& url, bool allow_private) {
     addrinfo hints{};
     hints.ai_family   = AF_UNSPEC;
@@ -150,7 +173,7 @@ std::string resolve_public(const UrlParts& url, bool allow_private) {
     const int rc      = getaddrinfo(url.host.c_str(), url.port.c_str(), &hints, &raw);
     if (rc != 0) {
         throw Error(ErrorKind::RemoteUnavailable,
-                    "failed to resolve media URL host: " + std::string(gai_strerror(rc)));
+                    "failed to resolve media URL host: " + address_error_message(rc));
     }
     std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(raw, freeaddrinfo);
     std::string selected;
@@ -163,7 +186,7 @@ std::string resolve_public(const UrlParts& url, bool allow_private) {
                       &reinterpret_cast<const sockaddr_in*>(it->ai_addr)->sin_addr)
                 : static_cast<const void*>(
                       &reinterpret_cast<const sockaddr_in6*>(it->ai_addr)->sin6_addr);
-        if (inet_ntop(it->ai_family, bytes, text.data(), text.size()) != nullptr) {
+        if (address_to_string(it->ai_family, bytes, text.data(), text.size()) != nullptr) {
             selected = text.data();
             if (it->ai_family == AF_INET) { break; }
         }

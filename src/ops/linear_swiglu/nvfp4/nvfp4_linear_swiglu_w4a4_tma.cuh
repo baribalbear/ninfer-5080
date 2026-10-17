@@ -46,9 +46,11 @@ template <class Geometry, class Schedule>
 __global__ __launch_bounds__(
     Schedule::kThreads,
     Schedule::
-        kMinBlocksPerSm) void nvfp4_linear_swiglu_w4a4_tma_kernel(const __grid_constant__
-                                                                      Nvfp4W4a4TmaDescriptors
-                                                                          descriptors,
+        kMinBlocksPerSm) void nvfp4_linear_swiglu_w4a4_tma_kernel(
+        // The descriptor struct is 128-byte aligned and is passed as an ordinary by-value
+        // kernel parameter (not __grid_constant__) because MSVC rejects 128-byte-aligned
+        // by-value parameters in the grid-constant host stub with C2719.
+        const Nvfp4W4a4TmaDescriptors descriptors,
                                                                   float alpha,
                                                                   __nv_bfloat16* __restrict__ output) {
     static_assert(Geometry::kOutputRows == 34816);
