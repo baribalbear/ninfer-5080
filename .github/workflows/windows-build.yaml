@@ -303,13 +303,17 @@ jobs:
             @("cmake", @("--version")),
             @("ninja", @("--version")),
             @("$env:CUDA_ROOT\bin\nvcc.exe", @("--version")),
-            @("cl.exe", @("--version")),
+            # cl has no --version flag. With no arguments it prints the
+            # version banner and exits 0 (banner) or 2 (usage / missing
+            # source file); both prove the compiler is present and runnable.
+            @("cl.exe", @(), @(0, 2)),
             @("C:\ninfer-tools\bin\pkg-config.exe", @("--version")),
             @("C:\ninfer-tools\bin\pkg-config.exe", @("--modversion libavformat libavcodec libavutil libswscale libcurl"))
           )
           foreach ($p in $probes) {
             $exe = $p[0]
             $pargs = $p[1]
+            $okCodes = if ($p.Count -gt 2) { $p[2] } else { @(0) }
             $cmd = Get-Command $exe -ErrorAction SilentlyContinue
             if (-not $cmd) {
               Write-Annotation "pre-flight probe failed: executable not found: $exe"
@@ -324,7 +328,7 @@ jobs:
             $code = $LASTEXITCODE
             $first = (($out -split "\r?\n") | Where-Object { $_.Trim() })[0]
             Write-Host "probe: $exe $($pargs -join ' ') -> exit $code | $first"
-            if ($code -ne 0) {
+            if ($okCodes -notcontains $code) {
               Write-Annotation "pre-flight probe failed: $exe $($pargs -join ' ') exited $code | $first"
               throw "pre-flight probe failed: $exe $($pargs -join ' ') exited $code"
             }
