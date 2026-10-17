@@ -50,6 +50,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # pwsh 7.4+ would turn any non-zero native exit code into a
+          # terminating error under EAP=Stop; we check exit codes ourselves.
+          $PSNativeCommandUseErrorActionPreference = $false
           $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path $vswhere)) { throw "vswhere not found at $vswhere" }
           # Several vswhere invocations, most specific first (the -latest
@@ -151,7 +154,10 @@ jobs:
             throw "cl.exe is not on PATH after entering the VS dev shell"
           }
           Write-Host "cl.exe resolved to: $($cl.Source)"
-          Write-Host ("cl version: " + ((& cl.exe --version 2>&1 | Out-String).Trim()))
+          # cl has no --version flag; with no arguments it prints the version
+          # banner and exits. Exit code is irrelevant here (checked above).
+          $clOut = (& cl.exe 2>&1 | Out-String).Trim()
+          Write-Host ("cl version: " + (($clOut -split "\r?\n") | Where-Object { $_.Trim() } | Select-Object -First 1))
 
           # The dev shell only affects this process; persist the MSVC
           # environment for all subsequent steps.
@@ -164,6 +170,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
           $zip = Join-Path $env:RUNNER_TEMP "cmake-windows-x86_64.zip"
           Invoke-WebRequest -Uri $env:CMAKE_ZIP_URL -OutFile $zip
           $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
@@ -178,6 +185,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
           $vcpkg = Join-Path $env:RUNNER_TEMP "vcpkg"
           git clone --depth 1 --branch $env:VCPKG_TAG https://github.com/microsoft/vcpkg $vcpkg
           Push-Location $vcpkg
@@ -188,6 +196,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
           $vcpkg = Join-Path $env:RUNNER_TEMP "vcpkg"
           $installed = Join-Path $env:RUNNER_TEMP "vcpkg-installed"
 
@@ -252,6 +261,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
           $installer = Join-Path $env:RUNNER_TEMP "cuda_windows_x86_64.exe"
           Invoke-WebRequest -Uri $env:CUDA_INSTALLER_URL -OutFile $installer
           if ($env:CUDA_INSTALLER_SHA256) {
@@ -275,6 +285,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
           $env:PKG_CONFIG_LIBDIR = Join-Path (Join-Path $env:RUNNER_TEMP "vcpkg-installed") "x64-windows\lib\pkgconfig"
           $env:PKG_CONFIG_PATH = $env:PKG_CONFIG_LIBDIR
           $cfgLog = Join-Path $env:RUNNER_TEMP "cmake-configure.log"
@@ -353,6 +364,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
           $artifacts = @("build\apps\ninfer.exe", "build\apps\ninfer-serve.exe")
           foreach ($path in $artifacts) {
             if (-not (Test-Path $path)) { throw "missing build artifact $path" }
