@@ -155,9 +155,60 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:PKG_CONFIG_LIBDIR = Join-Path (Join-Path $env:RUNNER_TEMP "vcpkg-installed") "x64-windows\lib\pkgconfig"
           $env:PKG_CONFIG_PATH = $env:PKG_CONFIG_LIBDIR
+          $cfgLog = Join-Path $env:RUNNER_TEMP "cmake-configure.log"
+          $buildLog = Join-Path $env:RUNNER_TEMP "cmake-build.log"
+          $summaryLines = @()
 
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j
+          # Pre-flight probes: every external tool the build depends on, each
+          # with an explicit exit code, so the job summary can distinguish a
+          # missing/broken tool from a CMake/source error.
+          $probes = @(
+            @("cmake", @("--version")),
+            @("ninja", @("--version")),
+            @("$env:CUDA_ROOT\bin\nvcc.exe", @("--version")),
+            @("C:\ninfer-tools\bin\pkg-config.exe", @("--version")),
+            @("C:\ninfer-tools\bin\pkg-config.exe", @("--modversion libavformat libavcodec libavutil libswscale libcurl"))
+          )
+          foreach ($p in $probes) {
+            $exe = $p[0]
+            $pargs = $p[1]
+            $out = (& $exe @pargs 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            $first = (($out -split "\r?\n") | Where-Object { $_.Trim() })[0]
+            Write-Host "probe: $exe $($pargs -join ' ') -> exit $code | $first"
+            $summaryLines += "probe: $exe $($pargs -join ' ') -> exit $code"
+            if ($code -ne 0) {
+              $summaryLines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+              throw "preflight probe failed: $exe $($pargs -join ' ') exited $code"
+            }
+          }
+
+          & cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release *>&1 | Tee-Object -FilePath $cfgLog
+          $cfg = $LASTEXITCODE
+          if ($cfg -ne 0) {
+            $tail = Get-Content $cfgLog -Tail 120
+            Write-Host "=== cmake configure failed (exit $cfg); last 120 lines ==="
+            $tail | ForEach-Object { Write-Host $_ }
+            $summaryLines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### CMake configure failed (exit $cfg)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            $tail | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            throw "cmake configure failed with exit code $cfg"
+          }
+
+          & cmake --build build -j *>&1 | Tee-Object -FilePath $buildLog
+          $build = $LASTEXITCODE
+          if ($build -ne 0) {
+            $tail = Get-Content $buildLog -Tail 160
+            Write-Host "=== cmake build failed (exit $build); last 160 lines ==="
+            $tail | ForEach-Object { Write-Host $_ }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### CMake build failed (exit $build)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            $tail | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            throw "cmake build failed with exit code $build"
+          }
 
       - name: Validate build artifacts
         shell: pwsh
