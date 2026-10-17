@@ -38,31 +38,99 @@ jobs:
         with:
           fetch-depth: 1
 
-      # The runner ships with MSVC Build Tools but no activated developer
-      # environment: cl.exe is not on PATH. nvcc refuses to run without a
-      # host compiler ("Cannot find compiler 'cl.exe' in PATH"), and CMake
-      # falls back to the preinstalled GCC, which cannot link against the
-      # MSVC-built vcpkg libraries. Enter the VS dev shell and persist the
-      # resulting environment so every later step sees the MSVC toolchain.
+      # The runner's VS (currently VS 2026 / 18.x) ships MSVC but no
+      # activated developer environment: cl.exe is not on PATH. nvcc
+      # refuses to run without a host compiler ("Cannot find compiler
+      # 'cl.exe' in PATH"), and CMake falls back to the preinstalled GCC,
+      # which cannot link against the MSVC-built vcpkg libraries. Enter the
+      # VS dev shell (probing known entry-point locations, since the layout
+      # moved between VS generations) and persist the resulting environment
+      # so every later step sees the MSVC toolchain.
       - name: Set up MSVC developer environment
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path $vswhere)) { throw "vswhere not found at $vswhere" }
-          $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
-          if (-not $vsPath) { throw "no Visual Studio installation with MSVC tools found" }
-          $enter = Join-Path $vsPath "VC\Auxiliary\Build\Enter-VsDevShell.ps1"
-          if (-not (Test-Path $enter)) { throw "Enter-VsDevShell.ps1 not found at $enter" }
-          Write-Host "Using VS installation: $vsPath"
-          & $enter -Arch amd64 -SkipAutomaticLocation
+          # All VS installations with MSVC tools, newest first.
+          $raw = & $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath,installationVersion
+          $installs = @()
+          foreach ($line in (@($raw) | Where-Object { $_ })) {
+            $parts = $line -split ';', 2
+            $installs += @{ Path = $parts[0].Trim(); Version = $parts[1].Trim() }
+          }
+          if ($installs.Count -eq 0) { throw "no Visual Studio installation with MSVC tools found" }
+          $installs = $installs | Sort-Object -Property @{Expression = { $_.Version } } -Descending
+          Write-Host ("VS installations: " + (($installs | ForEach-Object { $_.Version + ' ' + $_.Path }) -join '; '))
+
+          # Known dev-shell entry points across VS generations.
+          function Get-DevShellCandidates { param([string]$Vs)
+            return @(
+              (Join-Path $Vs "Common7\Tools\Enter-VsDevShell.ps1"),
+              (Join-Path $Vs "VC\Auxiliary\Build\Enter-VsDevShell.ps1"),
+              (Join-Path $Vs "Common7\Tools\VsDevCmd.bat"),
+              (Join-Path $Vs "VC\Auxiliary\Build\VsDevCmd.bat")
+            )
+          }
+
+          $entry = $null
+          foreach ($inst in $installs) {
+            foreach ($cand in (Get-DevShellCandidates $inst.Path)) {
+              if (Test-Path $cand) { $entry = $cand; break }
+            }
+            if ($entry) { break }
+          }
+
+          if (-not $entry) {
+            # No known entry point: dump the directory layout as public
+            # annotations so the actual VS generation layout is readable
+            # without log download access.
+            foreach ($inst in $installs) {
+              foreach ($rel in @("Common7\Tools", "VC\Auxiliary\Build", "VC\Tools\MSVC")) {
+                $dir = Join-Path $inst.Path $rel
+                if (Test-Path $dir) {
+                  $entries = (Get-ChildItem $dir -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", "
+                  if (-not $entries) { $entries = (Get-ChildItem $dir -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", " }
+                  [Console]::Error.WriteLine("::error::VS layout: $rel -> $entries")
+                } else {
+                  [Console]::Error.WriteLine("::error::VS layout: $rel -> (missing)")
+                }
+              }
+            }
+            throw "no dev shell entry point (Enter-VsDevShell.ps1 / VsDevCmd.bat) found"
+          }
+
+          Write-Host "Using dev shell entry point: $entry"
+          if ($entry.EndsWith(".ps1")) {
+            & $entry -Arch amd64 -SkipAutomaticLocation
+          } else {
+            # Batch entry point: run it through a temp .cmd (no PowerShell
+            # to cmd quoting involved) and import the resulting environment
+            # into this process.
+            $tmpBat = Join-Path $env:RUNNER_TEMP "import-devshell.cmd"
+            Set-Content -Path $tmpBat -Value @("@echo off", "call `"$entry`" -arch=x64", "if errorlevel 1 exit /b 1", "set")
+            $out = & $tmpBat
+            if ($LASTEXITCODE -ne 0) { throw "dev shell batch entry failed (exit $LASTEXITCODE)" }
+            foreach ($line in $out) {
+              if ($line -match '^([^=]+)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+              }
+            }
+          }
+
           $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
-          if (-not $cl) { throw "cl.exe is not on PATH after entering the VS dev shell" }
+          if (-not $cl) {
+            foreach ($n in @("PATH", "INCLUDE", "LIB")) {
+              [Console]::Error.WriteLine("::error::env $n = " + ([Environment]::GetEnvironmentVariable($n, "Process")))
+            }
+            throw "cl.exe is not on PATH after entering the VS dev shell"
+          }
           Write-Host "cl.exe resolved to: $($cl.Source)"
           Write-Host ("cl version: " + ((& cl.exe --version 2>&1 | Out-String).Trim()))
-          # Enter-VsDevShell only affects this process; persist the MSVC
+
+          # The dev shell only affects this process; persist the MSVC
           # environment for all subsequent steps.
-          foreach ($name in @("PATH","INCLUDE","LIB","VSINSTALLDIR","VCToolsInstallDir","VS170COMNTOOLS","MSBuildVersion")) {
+          foreach ($name in @("PATH", "INCLUDE", "LIB", "VSINSTALLDIR", "VCToolsInstallDir", "VCINSTALLDIR", "VS170COMNTOOLS", "VS180COMNTOOLS", "MSBuildVersion")) {
             $value = [Environment]::GetEnvironmentVariable($name, "Process")
             if ($value) { Add-Content -Path $env:GITHUB_ENV -Value "$name=$value" }
           }
